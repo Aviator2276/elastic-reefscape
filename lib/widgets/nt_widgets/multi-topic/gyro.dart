@@ -1,20 +1,25 @@
+import 'dart:math';
+
 import 'package:flutter/material.dart';
 
 import 'package:dot_cast/dot_cast.dart';
+import 'package:geekyants_flutter_gauges/geekyants_flutter_gauges.dart';
 import 'package:provider/provider.dart';
-import 'package:syncfusion_flutter_gauges/gauges.dart';
 
 import 'package:elastic_dashboard/services/nt4_client.dart';
 import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_toggle_switch.dart';
 import 'package:elastic_dashboard/widgets/nt_widgets/nt_widget.dart';
 
-class GyroModel extends NTWidgetModel {
+class GyroModel extends MultiTopicNTWidgetModel {
   @override
   String type = Gyro.widgetType;
 
   String get valueTopic => '$topic/Value';
 
   late NT4Subscription valueSubscription;
+
+  @override
+  List<NT4Subscription> get subscriptions => [valueSubscription];
 
   bool _counterClockwisePositive = false;
 
@@ -45,26 +50,8 @@ class GyroModel extends NTWidgetModel {
   }
 
   @override
-  void init() {
-    super.init();
-
+  void initializeSubscriptions() {
     valueSubscription = ntConnection.subscribe(valueTopic, super.period);
-  }
-
-  @override
-  void resetSubscription() {
-    ntConnection.unSubscribe(valueSubscription);
-
-    valueSubscription = ntConnection.subscribe(valueTopic, super.period);
-
-    super.resetSubscription();
-  }
-
-  @override
-  void unSubscribe() {
-    ntConnection.unSubscribe(valueSubscription);
-
-    super.unSubscribe();
   }
 
   @override
@@ -108,11 +95,10 @@ class Gyro extends NTWidget {
   Widget build(BuildContext context) {
     GyroModel model = cast(context.watch<NTWidgetModel>());
 
-    return StreamBuilder(
-      stream: model.valueSubscription.periodicStream(yieldAll: false),
-      initialData: model.ntConnection.getLastAnnouncedValue(model.valueTopic),
-      builder: (context, snapshot) {
-        double value = tryCast(snapshot.data) ?? 0.0;
+    return ValueListenableBuilder(
+      valueListenable: model.valueSubscription,
+      builder: (context, data, child) {
+        double value = tryCast(data) ?? 0.0;
 
         if (model.counterClockwisePositive) {
           value *= -1;
@@ -123,40 +109,63 @@ class Gyro extends NTWidget {
         return Column(
           children: [
             Flexible(
-              child: SfRadialGauge(
-                axes: [
-                  RadialAxis(
-                    pointers: [
-                      NeedlePointer(
-                        value: angle,
-                        needleColor: Colors.red,
-                        needleEndWidth: 5,
-                        needleStartWidth: 1,
-                        needleLength: 0.7,
-                        knobStyle: const KnobStyle(
-                          borderColor: Colors.grey,
-                          borderWidth: 0.025,
+              child: LayoutBuilder(builder: (context, constraints) {
+                double squareSide =
+                    min(constraints.maxWidth, constraints.maxHeight);
+
+                // Formula taken from radial gauge source code
+                final maxNeedleHeight = squareSide / (2 * 0.65) - (2 * 7.5);
+                return Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    RadialGauge(
+                      radiusFactor: 0.65,
+                      track: RadialTrack(
+                        thickness: 7.5,
+                        start: 0,
+                        end: 360,
+                        startAngle: 90,
+                        endAngle: 90 + 360,
+                        steps: 360 ~/ 45,
+                        color: const Color.fromRGBO(97, 97, 97, 1),
+                        trackStyle: TrackStyle(
+                            primaryRulerColor: Colors.grey,
+                            secondaryRulerColor:
+                                const Color.fromRGBO(97, 97, 97, 1),
+                            labelStyle: Theme.of(context).textTheme.bodySmall,
+                            primaryRulersHeight: 7.5,
+                            primaryRulersWidth: 2,
+                            secondaryRulersHeight: 7.5,
+                            rulersOffset: -18,
+                            labelOffset: -57.5,
+                            showLastLabel: false,
+                            secondaryRulerPerInterval: 8,
+                            inverseRulers: true),
+                        trackLabelFormater: (value) => value.toStringAsFixed(0),
+                      ),
+                      needlePointer: [
+                        NeedlePointer(
+                          needleWidth: squareSide * 0.03,
+                          needleEndWidth: squareSide * 0.005,
+                          needleHeight: maxNeedleHeight * 0.52 -
+                              (squareSide - 175.875) * 0.075,
+                          tailColor: Colors.grey,
+                          tailRadius: squareSide * 0.1,
+                          value: value,
                         ),
-                      )
-                    ],
-                    axisLineStyle: const AxisLineStyle(
-                      thickness: 5,
+                      ],
                     ),
-                    axisLabelStyle: const GaugeTextStyle(
-                      fontSize: 14,
+                    Container(
+                      width: squareSide * 0.07,
+                      height: squareSide * 0.07,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.grey[300]!,
+                      ),
                     ),
-                    ticksPosition: ElementsPosition.outside,
-                    labelsPosition: ElementsPosition.outside,
-                    showTicks: true,
-                    minorTicksPerInterval: 8,
-                    interval: 45,
-                    minimum: 0,
-                    maximum: 360,
-                    startAngle: 270,
-                    endAngle: 270,
-                  )
-                ],
-              ),
+                  ],
+                );
+              }),
             ),
             Text(angle.toStringAsFixed(2),
                 style: Theme.of(context).textTheme.bodyLarge),

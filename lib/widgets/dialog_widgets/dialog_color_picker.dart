@@ -7,12 +7,17 @@ class DialogColorPicker extends StatefulWidget {
   final Function(Color color) onColorPicked;
   final String label;
   final Color initialColor;
+  final Color? defaultColor;
+  final MainAxisSize rowSize;
 
-  const DialogColorPicker(
-      {super.key,
-      required this.onColorPicked,
-      required this.label,
-      required this.initialColor});
+  const DialogColorPicker({
+    super.key,
+    required this.onColorPicked,
+    required this.label,
+    required this.initialColor,
+    this.rowSize = MainAxisSize.min,
+    this.defaultColor,
+  });
 
   @override
   State<DialogColorPicker> createState() => _DialogColorPickerState();
@@ -36,7 +41,7 @@ class _DialogColorPickerState extends State<DialogColorPicker> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       crossAxisAlignment: CrossAxisAlignment.center,
-      mainAxisSize: MainAxisSize.min,
+      mainAxisSize: widget.rowSize,
       children: [
         Text(widget.label),
         const SizedBox(width: 5),
@@ -106,6 +111,18 @@ class _DialogColorPickerState extends State<DialogColorPicker> {
                       },
                       child: const Text('Cancel'),
                     ),
+                    if (widget.defaultColor != null)
+                      TextButton(
+                        onPressed: () {
+                          Navigator.of(context).pop(false);
+                          widget.onColorPicked.call(widget.defaultColor!);
+
+                          setState(() {
+                            selectedColor = widget.defaultColor!;
+                          });
+                        },
+                        child: const Text('Restore Default'),
+                      ),
                     TextButton(
                       onPressed: () {
                         Navigator.of(context).pop(false);

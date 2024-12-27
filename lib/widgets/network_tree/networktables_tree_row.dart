@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'package:collection/collection.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:elastic_dashboard/services/nt4_client.dart';
@@ -113,8 +114,10 @@ class NetworkTableTreeRow {
     children.clear();
   }
 
-  static NTWidgetModel? getNTWidgetFromTopic(NTConnection ntConnection,
-      SharedPreferences preferences, NT4Topic ntTopic) {
+  static SingleTopicNTWidgetModel? getNTWidgetFromTopic(
+      NTConnection ntConnection,
+      SharedPreferences preferences,
+      NT4Topic ntTopic) {
     switch (ntTopic.type) {
       case NT4TypeStr.kFloat64:
       case NT4TypeStr.kInt:
@@ -181,7 +184,8 @@ class NetworkTableTreeRow {
   }
 
   Future<String?> getTypeString(String typeTopic) async {
-    return ntConnection.subscribeAndRetrieveData(typeTopic);
+    return ntConnection.subscribeAndRetrieveData(typeTopic,
+        timeout: const Duration(milliseconds: 500));
   }
 
   Future<NTWidgetModel?>? getTypedWidget(String typeTopic) async {
@@ -192,28 +196,26 @@ class NetworkTableTreeRow {
     }
 
     return NTWidgetBuilder.buildNTModelFromType(
-        ntConnection, preferences, type, topic);
+      ntConnection,
+      preferences,
+      type,
+      topic,
+    );
   }
 
   Future<List<NTWidgetContainerModel>?> getListLayoutChildren() async {
-    List<NTWidgetContainerModel> listChildren = [];
-    for (NetworkTableTreeRow child in children) {
-      if (child.rowName.startsWith('.')) {
-        continue;
-      }
-      WidgetContainerModel? childModel =
-          await child.toWidgetContainerModel(resortToListLayout: false);
+    Iterable<Future<WidgetContainerModel?>> childrenFutures = children
+        .whereNot((e) => e.rowName.startsWith('.'))
+        .map((e) => e.toWidgetContainerModel(resortToListLayout: false));
 
-      if (childModel is NTWidgetContainerModel) {
-        listChildren.add(childModel);
-      }
-    }
+    Iterable<NTWidgetContainerModel> listChildren =
+        (await Future.wait(childrenFutures)).whereType();
 
     if (listChildren.isEmpty) {
       return null;
     }
 
-    return listChildren;
+    return listChildren.toList();
   }
 
   Future<WidgetContainerModel?> toWidgetContainerModel({
@@ -222,13 +224,17 @@ class NetworkTableTreeRow {
   }) async {
     NTWidgetModel? primary = await getPrimaryWidget();
 
-    if (primary == null) {
-      if (resortToListLayout) {
+    if (primary == null || !NTWidgetBuilder.isRegistered(primary.type)) {
+      primary?.unSubscribe();
+      primary?.disposeWidget(deleting: true);
+      primary?.forceDispose();
+
+      if (resortToListLayout && listLayoutBuilder != null) {
         List<NTWidgetContainerModel>? listLayoutChildren =
             await getListLayoutChildren();
 
         if (listLayoutChildren != null) {
-          return listLayoutBuilder?.call(
+          return listLayoutBuilder.call(
             title: rowName,
             children: listLayoutChildren,
           );
@@ -240,6 +246,9 @@ class NetworkTableTreeRow {
     NTWidget? widget = NTWidgetBuilder.buildNTWidgetFromModel(primary);
 
     if (widget == null) {
+      primary.unSubscribe();
+      primary.disposeWidget(deleting: true);
+      primary.forceDispose();
       return null;
     }
 

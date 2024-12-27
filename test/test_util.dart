@@ -2,17 +2,21 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'package:http/http.dart';
 import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
 
+import 'package:elastic_dashboard/services/ds_interop.dart';
 import 'package:elastic_dashboard/services/nt4_client.dart';
 import 'package:elastic_dashboard/services/nt_connection.dart';
+import 'package:elastic_dashboard/services/update_checker.dart';
 import 'test_util.mocks.dart';
 
 @GenerateNiceMocks([
   MockSpec<NTConnection>(),
   MockSpec<NT4Client>(),
-  MockSpec<NT4Subscription>()
+  MockSpec<NT4Subscription>(),
+  MockSpec<DSInteropClient>(),
 ])
 MockNTConnection createMockOfflineNT4() {
   HttpOverrides.global = null;
@@ -24,8 +28,9 @@ MockNTConnection createMockOfflineNT4() {
 
   when(mockSubscription.periodicStream()).thenAnswer((_) => Stream.value(null));
 
-  when(mockSubscription.listen(any)).thenAnswer((realInvocation) {});
+  when(mockSubscription.listen(any)).thenAnswer((invocation) {});
 
+  when(mockNT4Connection.ntConnected).thenReturn(ValueNotifier(false));
   when(mockNT4Connection.isNT4Connected).thenReturn(false);
 
   when(mockNT4Connection.serverTime).thenReturn(0);
@@ -33,8 +38,8 @@ MockNTConnection createMockOfflineNT4() {
   when(mockNT4Connection.connectionStatus())
       .thenAnswer((_) => Stream.value(false));
 
-  when(mockNT4Connection.dsConnectionStatus())
-      .thenAnswer((_) => Stream.value(false));
+  when(mockNT4Connection.dsConnected).thenReturn(ValueNotifier(false));
+  when(mockNT4Connection.isDSConnected).thenReturn(false);
 
   when(mockNT4Connection.latencyStream()).thenAnswer((_) => Stream.value(0));
 
@@ -78,18 +83,26 @@ MockNTConnection createMockOnlineNT4({
 
   Map<int, NT4Topic> virtualTopicsMap = {};
 
-  List<Function(Object?, int)> subscriptionListeners = [];
-
   for (int i = 0; i < virtualTopics.length; i++) {
     virtualTopicsMap.addAll({i + 1: virtualTopics[i]});
   }
 
+  List<NT4Topic> publishedTopics = [];
+
   when(mockNT4Connection.announcedTopics()).thenReturn(virtualTopicsMap);
+
+  when(mockNT4Connection.addTopicAnnounceListener(any))
+      .thenAnswer((invocation) {
+    for (NT4Topic topic in virtualTopics!) {
+      invocation.positionalArguments[0].call(topic);
+    }
+  });
 
   when(mockSubscription.periodicStream()).thenAnswer((_) => Stream.value(null));
 
-  when(mockSubscription.listen(any)).thenAnswer((realInvocation) {});
+  when(mockSubscription.listen(any)).thenAnswer((_) {});
 
+  when(mockNT4Connection.ntConnected).thenReturn(ValueNotifier(true));
   when(mockNT4Connection.isNT4Connected).thenReturn(true);
 
   when(mockNT4Connection.serverTime).thenReturn(serverTime);
@@ -97,8 +110,8 @@ MockNTConnection createMockOnlineNT4({
   when(mockNT4Connection.connectionStatus())
       .thenAnswer((_) => Stream.value(true));
 
-  when(mockNT4Connection.dsConnectionStatus())
-      .thenAnswer((_) => Stream.value(true));
+  when(mockNT4Connection.dsConnected).thenReturn(ValueNotifier(true));
+  when(mockNT4Connection.isDSConnected).thenReturn(true);
 
   when(mockNT4Connection.latencyStream()).thenAnswer((_) => Stream.value(0));
 
@@ -119,7 +132,20 @@ MockNTConnection createMockOnlineNT4({
         properties: {});
 
     virtualTopicsMap[virtualTopicsMap.length] = newTopic;
+    publishedTopics.add(newTopic);
     return newTopic;
+  });
+
+  when(mockNT4Connection.publishTopic(any)).thenAnswer((invocation) {
+    publishedTopics.add(invocation.positionalArguments[0]);
+  });
+
+  when(mockNT4Connection.unpublishTopic(any)).thenAnswer((invocation) {
+    publishedTopics.remove(invocation.positionalArguments[0]);
+  });
+
+  when(mockNT4Connection.isTopicPublished(any)).thenAnswer((invocation) {
+    return publishedTopics.contains(invocation.positionalArguments[0]);
   });
 
   when(mockNT4Connection.updateDataFromTopic(any, any))
@@ -139,37 +165,113 @@ MockNTConnection createMockOnlineNT4({
   });
 
   for (NT4Topic topic in virtualTopics) {
+    List<Function(Object?, int)> subscriptionListeners = [];
+    List<void Function()> subscriptionNotifiers = [];
+
     MockNT4Subscription topicSubscription = MockNT4Subscription();
+
+    when(topicSubscription.value).thenAnswer((_) {
+      return virtualValues![topic.name];
+    });
+
+    when(topicSubscription.value = any).thenAnswer((invocation) {
+      virtualValues![topic.name] = invocation.positionalArguments[0];
+      for (var notifier in subscriptionNotifiers) {
+        notifier.call();
+      }
+    });
+
+    when(topicSubscription.addListener(any)).thenAnswer((invocation) {
+      subscriptionNotifiers.add(invocation.positionalArguments[0]);
+    });
+
+    when(topicSubscription.removeListener(any)).thenAnswer((invocation) {
+      subscriptionNotifiers.remove(invocation.positionalArguments[0]);
+    });
+
+    when(mockNT4Connection.updateDataFromTopic(topic, any))
+        .thenAnswer((invocation) {
+      virtualValues![topic.name] = invocation.positionalArguments[1];
+      topicSubscription.value = invocation.positionalArguments[1];
+    });
+
+    when(mockNT4Connection.updateDataFromTopicName(topic.name, any))
+        .thenAnswer((invocation) {
+      virtualValues![topic.name] = invocation.positionalArguments[1];
+      topicSubscription.value = invocation.positionalArguments[1];
+    });
+
+    when(mockNT4Connection.updateDataFromSubscription(topicSubscription, any))
+        .thenAnswer((invocation) {
+      virtualValues![topic.name] = invocation.positionalArguments[1];
+      topicSubscription.value = invocation.positionalArguments[1];
+    });
 
     when(mockNT4Connection.getTopicFromName(topic.name)).thenReturn(topic);
 
     when(topicSubscription.periodicStream(yieldAll: anyNamed('yieldAll')))
-        .thenAnswer((_) => Stream.value(virtualValues?[topic.name]));
+        .thenAnswer((_) => Stream.value(virtualValues![topic.name]));
 
-    when(topicSubscription.listen(any)).thenAnswer((realInvocation) {
-      subscriptionListeners.add(realInvocation.positionalArguments[0]);
+    when(topicSubscription.listen(any)).thenAnswer((invocation) {
+      subscriptionListeners.add(invocation.positionalArguments[0]);
     });
 
     when(topicSubscription.updateValue(any, any)).thenAnswer(
-      (invoc) {
+      (invocation) {
         for (var value in subscriptionListeners) {
-          value.call(
-              invoc.positionalArguments[0], invoc.positionalArguments[1]);
+          value.call(invocation.positionalArguments[0],
+              invocation.positionalArguments[1]);
         }
+        virtualValues![topic.name] = invocation.positionalArguments[1];
+        topicSubscription.value = invocation.positionalArguments[1];
       },
     );
 
     when(mockNT4Connection.getLastAnnouncedValue(topic.name))
-        .thenAnswer((_) => virtualValues?[topic.name]);
+        .thenAnswer((_) => virtualValues![topic.name]);
 
     when(mockNT4Connection.subscribe(topic.name, any))
-        .thenReturn(topicSubscription);
+        .thenAnswer((_) => topicSubscription);
 
     when(mockNT4Connection.subscribeAll(topic.name, any))
-        .thenReturn(topicSubscription);
+        .thenAnswer((_) => topicSubscription);
   }
 
   return mockNT4Connection;
+}
+
+@GenerateNiceMocks([
+  MockSpec<UpdateChecker>(),
+])
+MockUpdateChecker createMockUpdateChecker(
+    {bool updateAvailable = false, String latestVersion = '0.0.0.0'}) {
+  MockUpdateChecker updateChecker = MockUpdateChecker();
+
+  when(updateChecker.isUpdateAvailable()).thenAnswer(
+    (_) => Future.value(
+      UpdateCheckerResponse(
+          updateAvailable: updateAvailable,
+          error: false,
+          latestVersion: latestVersion),
+    ),
+  );
+
+  return updateChecker;
+}
+
+@GenerateNiceMocks([
+  MockSpec<Client>(),
+])
+MockClient createHttpClient({Map<String, Response>? mockGetResponses}) {
+  MockClient mockClient = MockClient();
+
+  if (mockGetResponses != null) {
+    for (MapEntry<String, Response> mockRequest in mockGetResponses.entries) {
+      when(mockClient.get(Uri.parse(mockRequest.key)))
+          .thenAnswer((_) => Future.value(mockRequest.value));
+    }
+  }
+  return mockClient;
 }
 
 void ignoreOverflowErrors(

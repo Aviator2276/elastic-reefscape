@@ -406,14 +406,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.6.0"
-  flutter_hooks:
-    dependency: "direct main"
-    description:
-      name: flutter_hooks
-      sha256: cde36b12f7188c85286fba9b38cc5a902e7279f36dd676967106c041dc9dde70
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.20.5"
   flutter_launcher_icons:
     dependency: "direct main"
     description:
@@ -456,6 +448,15 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "4.0.0"
+  geekyants_flutter_gauges:
+    dependency: "direct main"
+    description:
+      path: "."
+      ref: elastic-version
+      resolved-ref: "141b95f6dd606204d47134107c1ddc2bbe4879cb"
+      url: "https://github.com/Gold872/GaugesFlutter.git"
+    source: git
+    version: "1.0.4"
   github:
     dependency: "direct main"
     description:
@@ -1013,14 +1014,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "23.2.7"
-  syncfusion_flutter_gauges:
-    dependency: "direct main"
-    description:
-      name: syncfusion_flutter_gauges
-      sha256: a559712b476b05ad2506925b5031dbba3c9e7ce83f482191a8185a3de054e7e6
-      url: "https://pub.dev"
-    source: hosted
-    version: "23.2.7"
   term_glyph:
     dependency: transitive
     description:
@@ -1081,10 +1074,10 @@ packages:
     dependency: "direct main"
     description:
       name: url_launcher
-      sha256: "6ce1e04375be4eed30548f10a315826fd933c1e493206eab82eed01f438c8d2e"
+      sha256: "21b704ce5fa560ea9f3b525b43601c678728ba46725bab9b01187b4831377ed3"
       url: "https://pub.dev"
     source: hosted
-    version: "6.2.6"
+    version: "6.3.0"
   url_launcher_android:
     dependency: transitive
     description:

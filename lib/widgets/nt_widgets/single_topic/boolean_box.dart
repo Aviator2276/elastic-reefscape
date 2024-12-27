@@ -7,7 +7,7 @@ import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_color_picker.dar
 import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_dropdown_chooser.dart';
 import 'package:elastic_dashboard/widgets/nt_widgets/nt_widget.dart';
 
-class BooleanBoxModel extends NTWidgetModel {
+class BooleanBoxModel extends SingleTopicNTWidgetModel {
   @override
   String type = BooleanBox.widgetType;
 
@@ -140,6 +140,7 @@ class BooleanBoxModel extends NTWidgetModel {
             },
             label: 'True Color',
             initialColor: _trueColor,
+            defaultColor: Colors.green,
           ),
           const SizedBox(width: 10),
           DialogColorPicker(
@@ -148,6 +149,7 @@ class BooleanBoxModel extends NTWidgetModel {
             },
             label: 'False Color',
             initialColor: _falseColor,
+            defaultColor: Colors.red,
           ),
         ],
       ),
@@ -202,11 +204,10 @@ class BooleanBox extends NTWidget {
   Widget build(BuildContext context) {
     BooleanBoxModel model = cast(context.watch<NTWidgetModel>());
 
-    return StreamBuilder(
-      stream: model.subscription?.periodicStream(yieldAll: false),
-      initialData: model.ntConnection.getLastAnnouncedValue(model.topic),
-      builder: (context, snapshot) {
-        bool value = tryCast(snapshot.data) ?? false;
+    return ValueListenableBuilder(
+      valueListenable: model.subscription!,
+      builder: (context, data, child) {
+        bool value = tryCast(data) ?? false;
 
         Widget defaultWidget() => Container(
               decoration: BoxDecoration(
@@ -246,13 +247,6 @@ class BooleanBox extends NTWidget {
         }
 
         return widgetToDisplay ?? defaultWidget();
-
-        // return Container(
-        //   decoration: BoxDecoration(
-        //     borderRadius: BorderRadius.circular(15.0),
-        //     color: (value) ? model.trueColor : model.falseColor,
-        //   ),
-        // );
       },
     );
   }

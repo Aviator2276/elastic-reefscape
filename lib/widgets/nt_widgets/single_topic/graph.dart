@@ -12,7 +12,7 @@ import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_color_picker.dar
 import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_text_input.dart';
 import 'package:elastic_dashboard/widgets/nt_widgets/nt_widget.dart';
 
-class GraphModel extends NTWidgetModel {
+class GraphModel extends SingleTopicNTWidgetModel {
   @override
   String type = GraphWidget.widgetType;
 
@@ -113,11 +113,13 @@ class GraphModel extends NTWidgetModel {
         children: [
           Flexible(
             child: DialogColorPicker(
-                onColorPicked: (color) {
-                  mainColor = color;
-                },
-                label: 'Graph Color',
-                initialColor: _mainColor),
+              onColorPicked: (color) {
+                mainColor = color;
+              },
+              label: 'Graph Color',
+              initialColor: _mainColor,
+              defaultColor: Colors.cyan,
+            ),
           ),
           Flexible(
             child: DialogTextInput(

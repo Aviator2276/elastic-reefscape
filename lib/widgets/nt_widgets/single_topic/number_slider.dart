@@ -2,8 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:dot_cast/dot_cast.dart';
+import 'package:geekyants_flutter_gauges/geekyants_flutter_gauges.dart';
 import 'package:provider/provider.dart';
-import 'package:syncfusion_flutter_gauges/gauges.dart';
 
 import 'package:elastic_dashboard/services/nt4_client.dart';
 import 'package:elastic_dashboard/services/text_formatter_builder.dart';
@@ -11,7 +11,7 @@ import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_text_input.dart'
 import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_toggle_switch.dart';
 import 'package:elastic_dashboard/widgets/nt_widgets/nt_widget.dart';
 
-class NumberSliderModel extends NTWidgetModel {
+class NumberSliderModel extends SingleTopicNTWidgetModel {
   @override
   String type = NumberSlider.widgetType;
 
@@ -20,9 +20,8 @@ class NumberSliderModel extends NTWidgetModel {
   int _divisions = 5;
   bool _updateContinuously = false;
 
-  double _currentValue = 0.0;
-
-  bool _dragging = false;
+  ValueNotifier<double> displayValue = ValueNotifier(0.0);
+  ValueNotifier<bool> dragging = ValueNotifier(false);
 
   double get minValue => _minValue;
 
@@ -48,14 +47,6 @@ class NumberSliderModel extends NTWidgetModel {
   bool get updateContinuously => _updateContinuously;
 
   set updateContinuously(value) => _updateContinuously = value;
-
-  double get currentValue => _currentValue;
-
-  set currentValue(value) => _currentValue = value;
-
-  bool get dragging => _dragging;
-
-  set dragging(value) => _dragging = value;
 
   NumberSliderModel({
     required super.ntConnection,
@@ -207,16 +198,20 @@ class NumberSlider extends NTWidget {
   Widget build(BuildContext context) {
     NumberSliderModel model = cast(context.watch<NTWidgetModel>());
 
-    return StreamBuilder(
-      stream: model.subscription?.periodicStream(),
-      initialData: model.ntConnection.getLastAnnouncedValue(model.topic),
-      builder: (context, snapshot) {
-        double value = tryCast<num>(snapshot.data)?.toDouble() ?? 0.0;
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        model.subscription!,
+        model.displayValue,
+        model.dragging,
+      ]),
+      builder: (context, child) {
+        double value =
+            tryCast<num>(model.subscription!.value)?.toDouble() ?? 0.0;
 
         double clampedValue = value.clamp(model.minValue, model.maxValue);
 
-        if (!model.dragging) {
-          model.currentValue = clampedValue;
+        if (!model.dragging.value) {
+          model.displayValue.value = clampedValue;
         }
 
         double divisionSeparation =
@@ -227,52 +222,64 @@ class NumberSlider extends NTWidget {
         return Column(
           children: [
             Text(
-              model.currentValue.toStringAsFixed(fractionDigits),
+              model.displayValue.value.toStringAsFixed(fractionDigits),
               style: Theme.of(context).textTheme.bodyLarge,
               overflow: TextOverflow.ellipsis,
             ),
             Expanded(
-              child: SfLinearGauge(
-                key: UniqueKey(),
-                minimum: model.minValue,
-                maximum: model.maxValue,
-                labelPosition: LinearLabelPosition.inside,
-                tickPosition: LinearElementPosition.cross,
-                interval: divisionSeparation,
-                axisTrackStyle: const LinearAxisTrackStyle(
-                  edgeStyle: LinearEdgeStyle.bothCurve,
+              child: LinearGauge(
+                rulers: RulerStyle(
+                  rulerPosition: RulerPosition.bottom,
+                  showLabel: true,
+                  textStyle: Theme.of(context).textTheme.bodyMedium,
+                  primaryRulerColor: Colors.grey,
+                  secondaryRulerColor: Colors.grey,
                 ),
-                markerPointers: [
-                  LinearShapePointer(
-                    value: model.currentValue,
+                extendLinearGauge: 1,
+                linearGaugeBoxDecoration: const LinearGaugeBoxDecoration(
+                  backgroundColor: Color.fromRGBO(87, 87, 87, 1),
+                  thickness: 5,
+                ),
+                pointers: [
+                  Pointer(
                     color: Theme.of(context).colorScheme.primary,
-                    height: 15.0,
-                    width: 15.0,
-                    animationDuration: 0,
-                    shapeType: LinearShapePointerType.circle,
-                    position: LinearElementPosition.cross,
-                    dragBehavior: LinearMarkerDragBehavior.free,
-                    onChangeStart: (_) {
-                      model.dragging = true;
+                    value: model.displayValue.value,
+                    shape: PointerShape.circle,
+                    enableAnimation: false,
+                    height: 15,
+                    isInteractive: true,
+                    onChangeStart: () {
+                      model.dragging.value = true;
                     },
                     onChanged: (value) {
                       if (model.dataType == NT4TypeStr.kInt) {
-                        model.currentValue = value.roundToDouble();
+                        model.displayValue.value = value.roundToDouble();
                       } else {
-                        model.currentValue = value;
+                        model.displayValue.value = value;
                       }
 
                       if (model.updateContinuously) {
-                        model.publishValue(model.currentValue);
+                        model.publishValue(model.displayValue.value);
                       }
                     },
-                    onChangeEnd: (value) {
-                      model.publishValue(model.currentValue);
-
-                      model.dragging = false;
+                    onChangeEnd: () {
+                      model.publishValue(model.displayValue.value);
+                      model.dragging.value = false;
                     },
                   ),
                 ],
+                customLabels: [
+                  for (int i = 0; i < model.divisions; i++)
+                    CustomRulerLabel(
+                      text: (model.minValue + divisionSeparation * i)
+                          .toStringAsFixed(2),
+                      value: model.minValue + divisionSeparation * i,
+                    ),
+                ],
+                enableGaugeAnimation: false,
+                start: model.minValue,
+                end: model.maxValue,
+                steps: divisionSeparation,
               ),
             ),
           ],

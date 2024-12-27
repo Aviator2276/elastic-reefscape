@@ -4,28 +4,28 @@ import 'package:flutter/services.dart';
 import 'package:dot_cast/dot_cast.dart';
 import 'package:provider/provider.dart';
 
+import 'package:elastic_dashboard/services/nt4_client.dart';
 import 'package:elastic_dashboard/widgets/custom_loading_indicator.dart';
 import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_text_input.dart';
 import 'package:elastic_dashboard/widgets/mjpeg.dart';
 import 'package:elastic_dashboard/widgets/nt_widgets/nt_widget.dart';
 
-class CameraStreamModel extends NTWidgetModel {
+class CameraStreamModel extends MultiTopicNTWidgetModel {
   @override
   String type = CameraStreamWidget.widgetType;
 
   String get streamsTopic => '$topic/streams';
 
+  late NT4Subscription streamsSubscription;
+
+  @override
+  List<NT4Subscription> get subscriptions => [streamsSubscription];
+
   int? _quality;
   int? _fps;
   Size? _resolution;
 
-  MemoryImage? _lastDisplayedImage;
-
-  MjpegStreamState? mjpegStream;
-
-  MemoryImage? get lastDisplayedImage => _lastDisplayedImage;
-
-  set lastDisplayedImage(value) => _lastDisplayedImage = value;
+  MjpegController? controller;
 
   int? get quality => _quality;
 
@@ -85,8 +85,18 @@ class CameraStreamModel extends NTWidgetModel {
         .toList();
 
     if (resolution != null && resolution.length > 1) {
-      _resolution = Size(resolution[0].toDouble(), resolution[1].toDouble());
+      if (resolution[0] % 2 != 0) {
+        resolution[0] += 1;
+      }
+      if (resolution[0] > 0 && resolution[1] > 0) {
+        _resolution = Size(resolution[0].toDouble(), resolution[1].toDouble());
+      }
     }
+  }
+
+  @override
+  void initializeSubscriptions() {
+    streamsSubscription = ntConnection.subscribe(streamsTopic, super.period);
   }
 
   @override
@@ -153,7 +163,12 @@ class CameraStreamModel extends NTWidgetModel {
                       return;
                     }
 
-                    resolution = Size(newWidth.toDouble(),
+                    if (newWidth! % 2 != 0) {
+                      // Won't allow += for some reason
+                      newWidth = newWidth! + 1;
+                    }
+
+                    resolution = Size(newWidth!.toDouble(),
                         resolution?.height.toDouble() ?? 0);
                   });
                 },
@@ -221,31 +236,15 @@ class CameraStreamModel extends NTWidgetModel {
   @override
   void disposeWidget({bool deleting = false}) {
     if (deleting) {
-      _lastDisplayedImage?.evict();
-      mjpegStream?.previousImage?.evict();
-      mjpegStream?.dispose();
+      controller?.dispose();
     }
 
     super.disposeWidget(deleting: deleting);
   }
 
   void closeClient() {
-    _lastDisplayedImage?.evict();
-    _lastDisplayedImage = mjpegStream?.previousImage;
-    mjpegStream?.dispose();
-    mjpegStream = null;
-  }
-
-  @override
-  List<Object> getCurrentData() {
-    List<Object?> rawStreams =
-        tryCast(ntConnection.getLastAnnouncedValue(streamsTopic)) ?? [];
-    List<String> streams = rawStreams.whereType<String>().toList();
-
-    return [
-      ...streams,
-      ntConnection.isNT4Connected,
-    ];
+    controller?.dispose();
+    controller = null;
   }
 }
 
@@ -258,12 +257,14 @@ class CameraStreamWidget extends NTWidget {
   Widget build(BuildContext context) {
     CameraStreamModel model = cast(context.watch<NTWidgetModel>());
 
-    return StreamBuilder(
-      stream: model.multiTopicPeriodicStream,
-      builder: (context, snapshot) {
-        List<Object?> rawStreams = tryCast(
-                model.ntConnection.getLastAnnouncedValue(model.streamsTopic)) ??
-            [];
+    return ListenableBuilder(
+      listenable: Listenable.merge([
+        model.streamsSubscription,
+        model.ntConnection.ntConnected,
+      ]),
+      builder: (context, child) {
+        List<Object?> rawStreams =
+            tryCast(model.streamsSubscription.value) ?? [];
 
         List<String> streams = [];
         for (Object? stream in rawStreams) {
@@ -276,16 +277,15 @@ class CameraStreamWidget extends NTWidget {
           streams.add(stream.substring('mjpg:'.length));
         }
 
-        if (streams.isEmpty || !model.ntConnection.isNT4Connected) {
+        if (streams.isEmpty || !model.ntConnection.ntConnected.value) {
           return Stack(
             fit: StackFit.expand,
             children: [
-              if (model.mjpegStream != null || model.lastDisplayedImage != null)
+              if (model.controller?.previousImage != null)
                 Opacity(
                   opacity: 0.35,
-                  child: Image(
-                    image: model.mjpegStream?.previousImage ??
-                        model.lastDisplayedImage!,
+                  child: Image.memory(
+                    Uint8List.fromList(model.controller!.previousImage!),
                     fit: BoxFit.contain,
                   ),
                 ),
@@ -307,28 +307,47 @@ class CameraStreamWidget extends NTWidget {
           );
         }
 
-        bool createNewWidget = model.mjpegStream == null;
+        bool createNewWidget = model.controller == null;
 
         String stream = model.getUrlWithParameters(streams.last);
 
         createNewWidget =
-            createNewWidget || (model.mjpegStream?.stream != stream);
+            createNewWidget || (model.controller?.stream != stream);
 
         if (createNewWidget) {
-          model.lastDisplayedImage?.evict();
-          model.mjpegStream?.dispose();
+          model.controller?.dispose();
 
-          model.mjpegStream = MjpegStreamState(stream: stream);
+          model.controller = MjpegController(stream: stream);
         }
 
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            Mjpeg(
-              mjpegStream: model.mjpegStream!,
-              fit: BoxFit.contain,
-            ),
-          ],
+        return IntrinsicWidth(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Row(
+                children: [
+                  ValueListenableBuilder(
+                    valueListenable: model.controller!.framesPerSecond,
+                    builder: (context, value, child) => Text('FPS: $value'),
+                  ),
+                  const Spacer(),
+                  ValueListenableBuilder(
+                    valueListenable: model.controller!.bandwidth,
+                    builder: (context, value, child) =>
+                        Text('Bandwidth: ${value.toStringAsFixed(2)} Mbps'),
+                  ),
+                ],
+              ),
+              Flexible(
+                child: Mjpeg(
+                  controller: model.controller!,
+                  fit: BoxFit.contain,
+                  expandToFit: true,
+                ),
+              ),
+              const Text(''),
+            ],
+          ),
         );
       },
     );
