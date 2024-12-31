@@ -12,6 +12,8 @@ import 'package:elegant_notification/elegant_notification.dart';
 import 'package:elegant_notification/resources/stacked_options.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flex_seed_scheme/flex_seed_scheme.dart';
+import 'package:http/http.dart';
+import 'package:path/path.dart' as path;
 import 'package:popover/popover.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -19,16 +21,18 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'package:elastic_dashboard/services/app_distributor.dart';
+import 'package:elastic_dashboard/services/elastic_layout_downloader.dart';
+import 'package:elastic_dashboard/services/elasticlib_listener.dart';
 import 'package:elastic_dashboard/services/hotkey_manager.dart';
 import 'package:elastic_dashboard/services/ip_address_util.dart';
 import 'package:elastic_dashboard/services/log.dart';
 import 'package:elastic_dashboard/services/nt_connection.dart';
-import 'package:elastic_dashboard/services/robot_notifications_listener.dart';
 import 'package:elastic_dashboard/services/settings.dart';
 import 'package:elastic_dashboard/services/shuffleboard_nt_listener.dart';
 import 'package:elastic_dashboard/services/update_checker.dart';
 import 'package:elastic_dashboard/util/tab_data.dart';
 import 'package:elastic_dashboard/widgets/custom_appbar.dart';
+import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_dropdown_chooser.dart';
 import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_text_input.dart';
 import 'package:elastic_dashboard/widgets/dialog_widgets/dialog_toggle_switch.dart';
 import 'package:elastic_dashboard/widgets/dialog_widgets/layout_drag_tile.dart';
@@ -44,6 +48,8 @@ class DashboardPage extends StatefulWidget {
   final String version;
   final NTConnection ntConnection;
   final SharedPreferences preferences;
+  final UpdateChecker updateChecker;
+  final ElasticLayoutDownloader? layoutDownloader;
   final Function(Color color)? onColorChanged;
   final Function(FlexSchemeVariant variant)? onThemeVariantChanged;
 
@@ -52,6 +58,8 @@ class DashboardPage extends StatefulWidget {
     required this.ntConnection,
     required this.preferences,
     required this.version,
+    required this.updateChecker,
+    this.layoutDownloader,
     this.onColorChanged,
     this.onThemeVariantChanged,
   });
@@ -61,9 +69,11 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> with WindowListener {
-  late final SharedPreferences preferences = widget.preferences;
-  late final UpdateChecker _updateChecker;
-  late final RobotNotificationsListener _robotNotificationListener;
+  SharedPreferences get preferences => widget.preferences;
+  late final ElasticLibListener _robotNotificationListener;
+  late final ElasticLayoutDownloader _layoutDownloader;
+
+  bool _seenShuffleboardWarning = false;
 
   final List<TabData> _tabData = [];
 
@@ -72,6 +82,9 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
   late int _gridSize =
       preferences.getInt(PrefKeys.gridSize) ?? Defaults.gridSize;
 
+  UpdateCheckerResponse lastUpdateResponse =
+      UpdateCheckerResponse(updateAvailable: false, error: false);
+
   int _currentTabIndex = 0;
 
   bool _addWidgetDialogVisible = false;
@@ -79,7 +92,6 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
   @override
   void initState() {
     super.initState();
-    _updateChecker = UpdateChecker(currentVersion: widget.version);
 
     windowManager.addListener(this);
     if (!Platform.environment.containsKey('FLUTTER_TEST')) {
@@ -136,6 +148,7 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
       ntConnection: widget.ntConnection,
       preferences: widget.preferences,
       onTabChanged: (tab) {
+        _showShuffleboardWarningMessage();
         int? parsedTabIndex = int.tryParse(tab);
 
         bool isIndex = parsedTabIndex != null;
@@ -160,6 +173,7 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
         });
       },
       onTabCreated: (tab) {
+        _showShuffleboardWarningMessage();
         if (preferences.getBool(PrefKeys.layoutLocked) ??
             Defaults.layoutLocked) {
           return;
@@ -181,42 +195,46 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
         ));
       },
       onWidgetAdded: (widgetData) {
+        _showShuffleboardWarningMessage();
         if (preferences.getBool(PrefKeys.layoutLocked) ??
             Defaults.layoutLocked) {
           return;
         }
-        // Needs to be done in case if widget data gets erased by the listener
-        Map<String, dynamic> widgetDataCopy = {};
+        // Needs to be converted into the tab json format
+        Map<String, dynamic> tabJson = {};
 
-        widgetData.forEach(
-            (key, value) => widgetDataCopy.putIfAbsent(key, () => value));
+        String tabName = widgetData['tab'];
+        tabJson.addAll({'containers': <Map<String, dynamic>>[]});
+        tabJson.addAll({'layouts': <Map<String, dynamic>>[]});
 
-        List<String> tabNamesList = _tabData.map((data) => data.name).toList();
+        if (!(widgetData.containsKey('layout') && widgetData['layout'])) {
+          tabJson['containers']!.add(widgetData);
+        } else {
+          tabJson['layouts']!.add(widgetData);
+        }
 
-        String tabName = widgetDataCopy['tab'];
-
-        if (!tabNamesList.contains(tabName)) {
+        if (!_tabData.any((tab) => tab.name == tabName)) {
           _tabData.add(
             TabData(
               name: tabName,
-              tabGrid: TabGridModel(
+              tabGrid: TabGridModel.fromJson(
                 ntConnection: widget.ntConnection,
                 preferences: widget.preferences,
+                jsonData: tabJson,
+                onJsonLoadingWarning: _showJsonLoadingWarning,
                 onAddWidgetPressed: _displayAddWidgetDialog,
               ),
             ),
           );
-
-          tabNamesList.add(tabName);
+        } else {
+          _tabData
+              .firstWhere((tab) => tab.name == tabName)
+              .tabGrid
+              .mergeFromJson(
+                jsonData: tabJson,
+                onJsonLoadingWarning: _showJsonLoadingWarning,
+              );
         }
-
-        int tabIndex = tabNamesList.indexOf(tabName);
-
-        if (tabIndex == -1) {
-          return;
-        }
-
-        _tabData[tabIndex].tabGrid.addWidgetFromTabJson(widgetDataCopy);
 
         setState(() {});
       },
@@ -232,17 +250,33 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
           () => _checkForUpdates(notifyIfLatest: false, notifyIfError: false));
     }
 
-    _robotNotificationListener = RobotNotificationsListener(
+    _robotNotificationListener = ElasticLibListener(
         ntConnection: widget.ntConnection,
-        onNotification: (title, description, icon) {
+        onTabSelected: (tabIdentifier) {
+          if (tabIdentifier is int) {
+            if (tabIdentifier >= _tabData.length) {
+              return;
+            }
+            setState(() => _currentTabIndex = tabIdentifier);
+          } else if (tabIdentifier is String) {
+            int tabIndex =
+                _tabData.indexWhere((tab) => tab.name == tabIdentifier);
+            if (tabIndex == -1) {
+              return;
+            }
+            setState(() => _currentTabIndex = tabIndex);
+          }
+        },
+        onNotification: (title, description, icon, time, width, height) {
           setState(() {
             ColorScheme colorScheme = Theme.of(context).colorScheme;
             TextTheme textTheme = Theme.of(context).textTheme;
             var widget = ElegantNotification(
-              autoDismiss: true,
-              showProgressIndicator: true,
+              autoDismiss: time.inMilliseconds > 0,
+              showProgressIndicator: time.inMilliseconds > 0,
               background: colorScheme.surface,
-              width: 350,
+              width: width,
+              height: height,
               position: Alignment.bottomRight,
               title: Text(
                 title,
@@ -250,7 +284,7 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              toastDuration: const Duration(seconds: 3),
+              toastDuration: time,
               icon: icon,
               description: Text(description),
               stackedOptions: StackedOptions(
@@ -263,6 +297,9 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
           });
         });
     _robotNotificationListener.listen();
+
+    _layoutDownloader =
+        widget.layoutDownloader ?? ElasticLayoutDownloader(Client());
   }
 
   @override
@@ -314,51 +351,24 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
   Future<void> _saveLayout() async {
     Map<String, dynamic> jsonData = _toJson();
 
-    ColorScheme colorScheme = Theme.of(context).colorScheme;
-    TextTheme textTheme = Theme.of(context).textTheme;
-
     bool successful =
         await preferences.setString(PrefKeys.layout, jsonEncode(jsonData));
     await _saveWindowPosition();
 
     if (successful) {
-      logger.info('Layout saved successfully!');
-      ElegantNotification notification = ElegantNotification(
-        background: colorScheme.surface,
-        progressIndicatorBackground: colorScheme.surface,
-        progressIndicatorColor: const Color(0xff01CB67),
+      logger.info('Layout saved successfully');
+      _showInfoNotification(
+        title: 'Saved',
+        message: 'Layout saved successfully',
         width: 300,
-        position: Alignment.bottomRight,
-        toastDuration: const Duration(seconds: 3, milliseconds: 500),
-        icon: const Icon(Icons.check_circle, color: Color(0xff01CB67)),
-        title: Text('Saved',
-            style: textTheme.bodyMedium!.copyWith(
-              fontWeight: FontWeight.bold,
-            )),
-        description: const Text('Layout saved successfully!'),
       );
-      if (mounted) {
-        notification.show(context);
-      }
     } else {
       logger.error('Could not save layout');
-      ElegantNotification notification = ElegantNotification(
-        background: colorScheme.surface,
-        progressIndicatorBackground: colorScheme.surface,
-        progressIndicatorColor: const Color(0xffFE355C),
+      _showInfoNotification(
+        title: 'Error While Saving Layout',
+        message: 'Failed to save layout, please try again',
         width: 300,
-        position: Alignment.bottomRight,
-        toastDuration: const Duration(seconds: 3, milliseconds: 500),
-        icon: const Icon(Icons.error, color: Color(0xffFE355C)),
-        title: Text('Error',
-            style: textTheme.bodyMedium!.copyWith(
-              fontWeight: FontWeight.bold,
-            )),
-        description: const Text('Failed to save layout, please try again!'),
       );
-      if (mounted) {
-        notification.show(context);
-      }
     }
   }
 
@@ -377,14 +387,20 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
     await preferences.setString(PrefKeys.windowPosition, positionString);
   }
 
-  void _checkForUpdates(
-      {bool notifyIfLatest = true, bool notifyIfError = true}) async {
+  void _checkForUpdates({
+    bool notifyIfLatest = true,
+    bool notifyIfError = true,
+  }) async {
     ColorScheme colorScheme = Theme.of(context).colorScheme;
     TextTheme textTheme = Theme.of(context).textTheme;
     ButtonThemeData buttonTheme = ButtonTheme.of(context);
 
     UpdateCheckerResponse updateResponse =
-        await _updateChecker.isUpdateAvailable();
+        await widget.updateChecker.isUpdateAvailable();
+
+    if (mounted) {
+      setState(() => lastUpdateResponse = updateResponse);
+    }
 
     if (updateResponse.error && notifyIfError) {
       ElegantNotification notification = ElegantNotification(
@@ -427,45 +443,33 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
         ),
         icon: const Icon(Icons.info, color: Color(0xff0066FF)),
         description: const Text('A new update is available!'),
-        action: Text(
-          'Update',
-          style: textTheme.bodyMedium!.copyWith(
-            color: buttonTheme.colorScheme?.primary,
-            fontWeight: FontWeight.bold,
+        action: TextButton(
+          onPressed: () async {
+            Uri url = Uri.parse(Settings.releasesLink);
+
+            if (await canLaunchUrl(url)) {
+              await launchUrl(url);
+            }
+          },
+          child: Text(
+            'Update',
+            style: textTheme.bodyMedium!.copyWith(
+              color: buttonTheme.colorScheme?.primary,
+              fontWeight: FontWeight.bold,
+            ),
           ),
         ),
-        onNotificationPressed: () async {
-          Uri url = Uri.parse(Settings.releasesLink);
-
-          if (await canLaunchUrl(url)) {
-            await launchUrl(url);
-          }
-        },
       );
 
       if (mounted) {
         notification.show(context);
       }
     } else if (updateResponse.onLatestVersion && notifyIfLatest) {
-      ElegantNotification notification = ElegantNotification(
-        background: colorScheme.surface,
-        progressIndicatorBackground: colorScheme.surface,
-        progressIndicatorColor: const Color(0xff01CB67),
+      _showInfoNotification(
+        title: 'No Updates Available',
+        message: 'You are running on the latest version of Elastic',
         width: 350,
-        position: Alignment.bottomRight,
-        toastDuration: const Duration(seconds: 3, milliseconds: 500),
-        icon: const Icon(Icons.check_circle, color: Color(0xff01CB67)),
-        title: Text('No Updates Available',
-            style: textTheme.bodyMedium!.copyWith(
-              fontWeight: FontWeight.bold,
-            )),
-        description:
-            const Text('You are running on the latest version of Elastic'),
       );
-
-      if (mounted) {
-        notification.show(context);
-      }
     }
   }
 
@@ -505,6 +509,11 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
 
     logger.info('Saving layout data to ${saveLocation.path}');
     await jsonFile.saveTo(saveLocation.path);
+    _showInfoNotification(
+      title: 'Exported Layout',
+      message: 'Successfully exported layout to\n${saveLocation.path}',
+      width: 500,
+    );
   }
 
   void _importLayout() async {
@@ -570,23 +579,43 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
     });
   }
 
-  void _loadLayoutFromJsonData(String jsonString) {
-    logger.info('Loading layout from json');
-    Map<String, dynamic>? jsonData = tryCast(jsonDecode(jsonString));
-
+  bool _validateJsonData(Map<String, dynamic>? jsonData) {
     if (jsonData == null) {
       _showJsonLoadingError('Invalid JSON format, aborting.');
-      _createDefaultTabs();
-      return;
+      return false;
     }
 
     if (!jsonData.containsKey('tabs')) {
       _showJsonLoadingError('JSON does not contain necessary data, aborting.');
+      return false;
+    }
+
+    for (Map<String, dynamic> data in jsonData['tabs']) {
+      if (tryCast(data['name']) == null) {
+        _showJsonLoadingError('Tab name not specified');
+        return false;
+      }
+
+      if (tryCast<Map>(data['grid_layout']) == null) {
+        _showJsonLoadingError(
+            'Grid layout not specified for tab \'${data['name']}\'');
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  void _loadLayoutFromJsonData(String jsonString) {
+    logger.info('Loading layout from json');
+    Map<String, dynamic>? jsonData = tryCast(jsonDecode(jsonString));
+
+    if (!_validateJsonData(jsonData)) {
       _createDefaultTabs();
       return;
     }
 
-    if (jsonData.containsKey('grid_size')) {
+    if (jsonData!.containsKey('grid_size')) {
       _gridSize = tryCast(jsonData['grid_size']) ?? _gridSize;
       preferences.setInt(PrefKeys.gridSize, _gridSize);
     }
@@ -594,17 +623,6 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
     _tabData.clear();
 
     for (Map<String, dynamic> data in jsonData['tabs']) {
-      if (tryCast(data['name']) == null) {
-        _showJsonLoadingWarning('Tab name not specified, ignoring tab data.');
-        continue;
-      }
-
-      if (tryCast<Map>(data['grid_layout']) == null) {
-        _showJsonLoadingWarning(
-            'Grid layout not specified for tab \'${data['name']}\', ignoring tab data.');
-        continue;
-      }
-
       _tabData.add(
         TabData(
           name: data['name'],
@@ -624,6 +642,150 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
     if (_currentTabIndex >= _tabData.length) {
       _currentTabIndex = _tabData.length - 1;
     }
+  }
+
+  bool _mergeLayoutFromJsonData(String jsonString) {
+    logger.info('Merging layout from json');
+
+    Map<String, dynamic>? jsonData = tryCast(jsonDecode(jsonString));
+
+    if (!_validateJsonData(jsonData)) {
+      return false;
+    }
+
+    for (Map<String, dynamic> tabJson in jsonData!['tabs']) {
+      String tabName = tabJson['name'];
+      if (!_tabData.any((tab) => tab.name == tabName)) {
+        _tabData.add(
+          TabData(
+            name: tabName,
+            tabGrid: TabGridModel.fromJson(
+              ntConnection: widget.ntConnection,
+              preferences: widget.preferences,
+              jsonData: tabJson['grid_layout'],
+              onAddWidgetPressed: _displayAddWidgetDialog,
+              onJsonLoadingWarning: _showJsonLoadingWarning,
+            ),
+          ),
+        );
+      } else {
+        TabGridModel existingTab =
+            _tabData.firstWhere((tab) => tab.name == tabName).tabGrid;
+        existingTab.mergeFromJson(
+          jsonData: tabJson['grid_layout'],
+          onJsonLoadingWarning: _showJsonLoadingWarning,
+        );
+      }
+    }
+
+    _showInfoNotification(
+      title: 'Successfully Downloaded Layout',
+      message: 'Remote layout has been successfully downloaded and merged!',
+      width: 350,
+    );
+
+    setState(() {});
+
+    return true;
+  }
+
+  Future<String?> _showRemoteLayoutSelection(List<String> fileNames) async {
+    if (!mounted) {
+      return null;
+    }
+    ValueNotifier<String?> currentSelection = ValueNotifier(null);
+    return await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Select Layout'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ValueListenableBuilder(
+              valueListenable: currentSelection,
+              builder: (_, value, child) => DialogDropdownChooser<String>(
+                choices: fileNames,
+                initialValue: value,
+                onSelectionChanged: (selection) =>
+                    currentSelection.value = selection,
+              ),
+            )
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(null),
+            child: const Text('Cancel'),
+          ),
+          ValueListenableBuilder(
+            valueListenable: currentSelection,
+            builder: (_, value, child) => TextButton(
+              onPressed: (value != null)
+                  ? () => Navigator.of(context).pop(value)
+                  : null,
+              child: const Text('Download'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _loadLayoutFromRobot() async {
+    if (preferences.getBool(PrefKeys.layoutLocked) ?? Defaults.layoutLocked) {
+      return;
+    }
+
+    LayoutDownloadResponse<List<String>> layoutsResponse =
+        await _layoutDownloader.getAvailableLayouts(
+      ntConnection: widget.ntConnection,
+      preferences: preferences,
+    );
+
+    if (!layoutsResponse.successful) {
+      _showErrorNotification(
+        title: 'Failed to Retrieve Layout List',
+        message: layoutsResponse.data.firstOrNull ??
+            'Unable to retrieve list of available layouts',
+        width: 400,
+      );
+      return;
+    }
+
+    if (layoutsResponse.data.isEmpty) {
+      _showErrorNotification(
+        title: 'Failed to Retrieve Layout List',
+        message:
+            'No layouts were found, ensure a valid layout json file is placed in the root directory of your deploy directory.',
+        width: 400,
+      );
+      return;
+    }
+
+    String? selectedLayout = await _showRemoteLayoutSelection(
+      layoutsResponse.data.sorted((a, b) => a.compareTo(b)),
+    );
+
+    if (selectedLayout == null) {
+      return;
+    }
+
+    LayoutDownloadResponse response = await _layoutDownloader.downloadLayout(
+      ntConnection: widget.ntConnection,
+      preferences: preferences,
+      layoutName: selectedLayout,
+    );
+
+    if (!response.successful) {
+      _showErrorNotification(
+        title: 'Failed to Download Layout',
+        message: response.data,
+        width: 400,
+      );
+      return;
+    }
+
+    _mergeLayoutFromJsonData(response.data);
   }
 
   void _createDefaultTabs() {
@@ -652,56 +814,170 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
     }
   }
 
+  void _showShuffleboardWarningMessage() {
+    if (_seenShuffleboardWarning) {
+      return;
+    }
+    ColorScheme colorScheme = Theme.of(context).colorScheme;
+    TextTheme textTheme = Theme.of(context).textTheme;
+    ButtonThemeData buttonTheme = ButtonTheme.of(context);
+
+    ElegantNotification notification = ElegantNotification(
+      autoDismiss: false,
+      background: colorScheme.surface,
+      showProgressIndicator: false,
+      width: 450,
+      height: 160,
+      position: Alignment.bottomRight,
+      icon: const Icon(Icons.warning, color: Colors.yellow),
+      action: TextButton(
+        onPressed: () async {
+          Uri url = Uri.parse(
+              'https://frc-elastic.gitbook.io/docs/additional-features-and-references/remote-layout-downloading#shuffleboard-api-migration-guide');
+
+          if (await canLaunchUrl(url)) {
+            await launchUrl(url);
+          }
+        },
+        child: Text(
+          'Documentation',
+          style: textTheme.bodyMedium!.copyWith(
+            color: buttonTheme.colorScheme?.primary,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+      title: Text(
+        'Shuffleboard API Deprecation',
+        style: textTheme.bodyMedium!.copyWith(
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      description: const Text(
+        'Support for the Shuffleboard API is deprecated in favor of remote layout downloading and will be removed after the 2025 season. See the documentation for more details about migration.',
+        overflow: TextOverflow.ellipsis,
+        maxLines: 4,
+      ),
+    );
+
+    if (mounted) {
+      notification.show(context);
+    }
+    _seenShuffleboardWarning = true;
+  }
+
   void _showJsonLoadingError(String errorMessage) {
     logger.error(errorMessage);
     Future(() {
-      ColorScheme colorScheme = Theme.of(context).colorScheme;
-      TextTheme textTheme = Theme.of(context).textTheme;
-
       int lines = '\n'.allMatches(errorMessage).length + 1;
 
-      ElegantNotification(
-        background: colorScheme.surface,
-        progressIndicatorBackground: colorScheme.surface,
-        progressIndicatorColor: const Color(0xffFE355C),
+      _showErrorNotification(
+        title: 'Error while loading JSON data',
+        message: errorMessage,
         width: 350,
         height: 100 + (lines - 1) * 10,
-        position: Alignment.bottomRight,
-        toastDuration: const Duration(seconds: 3, milliseconds: 500),
-        icon: const Icon(Icons.error, color: Color(0xffFE355C)),
-        title: Text('Error while loading JSON data',
-            style: textTheme.bodyMedium!.copyWith(
-              fontWeight: FontWeight.bold,
-            )),
-        description: Flexible(child: Text(errorMessage)),
-      ).show(context);
+      );
     });
   }
 
   void _showJsonLoadingWarning(String warningMessage) {
     logger.warning(warningMessage);
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      ColorScheme colorScheme = Theme.of(context).colorScheme;
-      TextTheme textTheme = Theme.of(context).textTheme;
-
       int lines = '\n'.allMatches(warningMessage).length + 1;
 
-      ElegantNotification(
-        background: colorScheme.surface,
-        progressIndicatorBackground: colorScheme.surface,
-        progressIndicatorColor: Colors.yellow,
+      _showWarningNotification(
+        title: 'Warning while loading JSON data',
+        message: warningMessage,
         width: 350,
         height: 100 + (lines - 1) * 10,
-        position: Alignment.bottomRight,
-        toastDuration: const Duration(seconds: 3, milliseconds: 500),
-        icon: const Icon(Icons.warning, color: Colors.yellow),
-        title: Text('Warning while loading JSON data',
-            style: textTheme.bodyMedium!.copyWith(
-              fontWeight: FontWeight.bold,
-            )),
-        description: Flexible(child: Text(warningMessage)),
-      ).show(context);
+      );
     });
+  }
+
+  void _showInfoNotification({
+    required String title,
+    required String message,
+    Duration toastDuration = const Duration(seconds: 3, milliseconds: 500),
+    double? width,
+    double? height,
+  }) =>
+      _showNotification(
+        title: title,
+        message: message,
+        color: const Color(0xff01CB67),
+        icon: const Icon(Icons.error, color: Color(0xff01CB67)),
+        toastDuration: toastDuration,
+        width: width,
+        height: height,
+      );
+
+  void _showWarningNotification({
+    required String title,
+    required String message,
+    Duration toastDuration = const Duration(seconds: 3, milliseconds: 500),
+    double? width,
+    double? height,
+  }) =>
+      _showNotification(
+        title: title,
+        message: message,
+        color: Colors.yellow,
+        icon: const Icon(Icons.warning, color: Colors.yellow),
+        toastDuration: toastDuration,
+        width: width,
+        height: height,
+      );
+
+  void _showErrorNotification({
+    required String title,
+    required String message,
+    Duration toastDuration = const Duration(seconds: 3, milliseconds: 500),
+    double? width,
+    double? height,
+  }) =>
+      _showNotification(
+        title: title,
+        message: message,
+        color: const Color(0xffFE355C),
+        icon: const Icon(Icons.error, color: Color(0xffFE355C)),
+        toastDuration: toastDuration,
+        width: width,
+        height: height,
+      );
+
+  void _showNotification({
+    required String title,
+    required String message,
+    required Color color,
+    required Widget icon,
+    Duration toastDuration = const Duration(seconds: 3, milliseconds: 500),
+    double? width,
+    double? height,
+  }) {
+    ColorScheme colorScheme = Theme.of(context).colorScheme;
+    TextTheme textTheme = Theme.of(context).textTheme;
+
+    ElegantNotification notification = ElegantNotification(
+      background: colorScheme.surface,
+      progressIndicatorBackground: colorScheme.surface,
+      progressIndicatorColor: color,
+      width: width,
+      height: height,
+      position: Alignment.bottomRight,
+      toastDuration: toastDuration,
+      icon: icon,
+      title: Text(
+        title,
+        style: textTheme.bodyMedium!.copyWith(
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      description: Flexible(child: Text(message)),
+    );
+
+    if (mounted) {
+      notification.show(context);
+    }
   }
 
   void _setupShortcuts() {
@@ -729,6 +1005,21 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
         modifiers: [KeyModifier.control, KeyModifier.shift],
       ),
       callback: _exportLayout,
+    );
+    // Download from robot (Ctrl + D)
+    hotKeyManager.register(
+      HotKey(
+        LogicalKeyboardKey.keyD,
+        modifiers: [KeyModifier.control],
+      ),
+      callback: () {
+        if (preferences.getBool(PrefKeys.layoutLocked) ??
+            Defaults.layoutLocked) {
+          return;
+        }
+
+        _loadLayoutFromRobot();
+      },
     );
     // Switch to Tab (Ctrl + Tab #)
     for (int i = 1; i <= 9; i++) {
@@ -1176,6 +1467,13 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
         },
         onColorChanged: widget.onColorChanged,
         onThemeVariantChanged: widget.onThemeVariantChanged,
+        onOpenAssetsFolderPressed: () async {
+          Uri uri = Uri.file(
+              '${path.dirname(Platform.resolvedExecutable)}/data/flutter_assets/assets/');
+          if (await canLaunchUrl(uri)) {
+            launchUrl(uri);
+          }
+        },
       ),
     );
   }
@@ -1422,7 +1720,7 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
               style: menuButtonStyle,
               onPressed: !(preferences.getBool(PrefKeys.layoutLocked) ??
                       Defaults.layoutLocked)
-                  ? () => _importLayout()
+                  ? _importLayout
                   : null,
               shortcut:
                   const SingleActivator(LogicalKeyboardKey.keyO, control: true),
@@ -1438,9 +1736,7 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
             // Save
             MenuItemButton(
               style: menuButtonStyle,
-              onPressed: () {
-                _saveLayout();
-              },
+              onPressed: _saveLayout,
               shortcut:
                   const SingleActivator(LogicalKeyboardKey.keyS, control: true),
               child: const Row(
@@ -1452,23 +1748,44 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
                 ],
               ),
             ),
-
             // Export layout
             MenuItemButton(
-                style: menuButtonStyle,
-                onPressed: () {
-                  _exportLayout();
-                },
-                shortcut: const SingleActivator(LogicalKeyboardKey.keyS,
-                    shift: true, control: true),
-                child: const Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.save_as_outlined),
-                    SizedBox(width: 8),
-                    Text('Save As'),
-                  ],
-                )),
+              style: menuButtonStyle,
+              onPressed: _exportLayout,
+              shortcut: const SingleActivator(
+                LogicalKeyboardKey.keyS,
+                shift: true,
+                control: true,
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.save_as_outlined),
+                  SizedBox(width: 8),
+                  Text('Save As'),
+                ],
+              ),
+            ),
+            // Download layout
+            MenuItemButton(
+              style: menuButtonStyle,
+              onPressed: !(preferences.getBool(PrefKeys.layoutLocked) ??
+                      Defaults.layoutLocked)
+                  ? _loadLayoutFromRobot
+                  : null,
+              shortcut: const SingleActivator(
+                LogicalKeyboardKey.keyD,
+                control: true,
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.download),
+                  SizedBox(width: 8),
+                  Text('Download From Robot'),
+                ],
+              ),
+            ),
           ],
           child: const Text(
             'File',
@@ -1603,11 +1920,38 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
       ],
     );
 
+    final List<Widget> trailing = [
+      if (lastUpdateResponse.updateAvailable) ...[
+        const VerticalDivider(),
+        Tooltip(
+          message: 'Download version ${lastUpdateResponse.latestVersion}',
+          child: MenuItemButton(
+            style: menuButtonStyle.copyWith(
+              minimumSize:
+                  const WidgetStatePropertyAll(Size(36.0, double.infinity)),
+              maximumSize:
+                  const WidgetStatePropertyAll(Size(36.0, double.infinity)),
+            ),
+            onPressed: () async {
+              Uri url = Uri.parse(Settings.releasesLink);
+
+              if (await canLaunchUrl(url)) {
+                await launchUrl(url);
+              }
+            },
+            child: const Icon(Icons.update, color: Colors.orange),
+          ),
+        ),
+        const VerticalDivider(),
+      ],
+    ];
+
     return Scaffold(
       appBar: CustomAppBar(
         titleText: appTitle,
         onWindowClose: onWindowClose,
-        menuBar: menuBar,
+        leading: menuBar,
+        trailing: trailing,
       ),
       body: Focus(
         autofocus: true,
@@ -1923,6 +2267,7 @@ class _AddWidgetDialogState extends State<_AddWidgetDialog> {
                                 setState(() => _searchQuery = value),
                             initialText: _searchQuery,
                             allowEmptySubmission: true,
+                            updateOnChanged: true,
                             label: 'Search',
                           ),
                         ),

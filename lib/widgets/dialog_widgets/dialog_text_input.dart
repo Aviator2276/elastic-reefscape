@@ -9,6 +9,7 @@ class DialogTextInput extends StatefulWidget {
   final bool allowEmptySubmission;
   final bool autoFocus;
   final bool enabled;
+  final bool updateOnChanged;
 
   final TextEditingController? textEditingController;
 
@@ -22,6 +23,7 @@ class DialogTextInput extends StatefulWidget {
     this.formatter,
     this.textEditingController,
     this.autoFocus = false,
+    this.updateOnChanged = false,
   });
 
   @override
@@ -60,6 +62,12 @@ class _DialogTextInputState extends State<DialogTextInput> {
         child: TextField(
           autofocus: widget.autoFocus,
           enabled: widget.enabled,
+          onChanged: (value) {
+            if (widget.updateOnChanged &&
+                (value.isNotEmpty || widget.allowEmptySubmission)) {
+              widget.onSubmit.call(value);
+            }
+          },
           onSubmitted: (value) {
             if (value.isNotEmpty || widget.allowEmptySubmission) {
               widget.onSubmit.call(value);

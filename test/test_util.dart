@@ -2,12 +2,14 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'package:http/http.dart';
 import 'package:mockito/annotations.dart';
 import 'package:mockito/mockito.dart';
 
 import 'package:elastic_dashboard/services/ds_interop.dart';
 import 'package:elastic_dashboard/services/nt4_client.dart';
 import 'package:elastic_dashboard/services/nt_connection.dart';
+import 'package:elastic_dashboard/services/update_checker.dart';
 import 'test_util.mocks.dart';
 
 @GenerateNiceMocks([
@@ -36,8 +38,8 @@ MockNTConnection createMockOfflineNT4() {
   when(mockNT4Connection.connectionStatus())
       .thenAnswer((_) => Stream.value(false));
 
-  when(mockNT4Connection.dsConnectionStatus())
-      .thenAnswer((_) => Stream.value(false));
+  when(mockNT4Connection.dsConnected).thenReturn(ValueNotifier(false));
+  when(mockNT4Connection.isDSConnected).thenReturn(false);
 
   when(mockNT4Connection.latencyStream()).thenAnswer((_) => Stream.value(0));
 
@@ -108,8 +110,8 @@ MockNTConnection createMockOnlineNT4({
   when(mockNT4Connection.connectionStatus())
       .thenAnswer((_) => Stream.value(true));
 
-  when(mockNT4Connection.dsConnectionStatus())
-      .thenAnswer((_) => Stream.value(true));
+  when(mockNT4Connection.dsConnected).thenReturn(ValueNotifier(true));
+  when(mockNT4Connection.isDSConnected).thenReturn(true);
 
   when(mockNT4Connection.latencyStream()).thenAnswer((_) => Stream.value(0));
 
@@ -190,19 +192,19 @@ MockNTConnection createMockOnlineNT4({
     when(mockNT4Connection.updateDataFromTopic(topic, any))
         .thenAnswer((invocation) {
       virtualValues![topic.name] = invocation.positionalArguments[1];
-      topicSubscription.value = invocation.positionalArguments[1];
+      topicSubscription.updateValue(invocation.positionalArguments[1], 0);
     });
 
     when(mockNT4Connection.updateDataFromTopicName(topic.name, any))
         .thenAnswer((invocation) {
       virtualValues![topic.name] = invocation.positionalArguments[1];
-      topicSubscription.value = invocation.positionalArguments[1];
+      topicSubscription.updateValue(invocation.positionalArguments[1], 0);
     });
 
     when(mockNT4Connection.updateDataFromSubscription(topicSubscription, any))
         .thenAnswer((invocation) {
       virtualValues![topic.name] = invocation.positionalArguments[1];
-      topicSubscription.value = invocation.positionalArguments[1];
+      topicSubscription.updateValue(invocation.positionalArguments[1], 0);
     });
 
     when(mockNT4Connection.getTopicFromName(topic.name)).thenReturn(topic);
@@ -216,12 +218,12 @@ MockNTConnection createMockOnlineNT4({
 
     when(topicSubscription.updateValue(any, any)).thenAnswer(
       (invocation) {
+        virtualValues![topic.name] = invocation.positionalArguments[0];
         for (var value in subscriptionListeners) {
           value.call(invocation.positionalArguments[0],
               invocation.positionalArguments[1]);
         }
-        virtualValues![topic.name] = invocation.positionalArguments[1];
-        topicSubscription.value = invocation.positionalArguments[1];
+        topicSubscription.value = invocation.positionalArguments[0];
       },
     );
 
@@ -236,6 +238,40 @@ MockNTConnection createMockOnlineNT4({
   }
 
   return mockNT4Connection;
+}
+
+@GenerateNiceMocks([
+  MockSpec<UpdateChecker>(),
+])
+MockUpdateChecker createMockUpdateChecker(
+    {bool updateAvailable = false, String latestVersion = '0.0.0.0'}) {
+  MockUpdateChecker updateChecker = MockUpdateChecker();
+
+  when(updateChecker.isUpdateAvailable()).thenAnswer(
+    (_) => Future.value(
+      UpdateCheckerResponse(
+          updateAvailable: updateAvailable,
+          error: false,
+          latestVersion: latestVersion),
+    ),
+  );
+
+  return updateChecker;
+}
+
+@GenerateNiceMocks([
+  MockSpec<Client>(),
+])
+MockClient createHttpClient({Map<String, Response>? mockGetResponses}) {
+  MockClient mockClient = MockClient();
+
+  if (mockGetResponses != null) {
+    for (MapEntry<String, Response> mockRequest in mockGetResponses.entries) {
+      when(mockClient.get(Uri.parse(mockRequest.key)))
+          .thenAnswer((_) => Future.value(mockRequest.value));
+    }
+  }
+  return mockClient;
 }
 
 void ignoreOverflowErrors(
