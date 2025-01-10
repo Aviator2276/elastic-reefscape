@@ -2234,8 +2234,15 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
                           .tabGrid
                           .placeDragInWidget(widget);
                     },
-                    onRemoveWidget: () =>
-                        _tabData[_currentTabIndex].tabGrid.removeDragInWidget(),
+                    onRemoveWidget: () {
+                      // Just in case if the tab index is somehow changed between frames
+                      int indexOnRemoval = _currentTabIndex;
+
+                      WidgetsBinding.instance.addPostFrameCallback((_) =>
+                          _tabData[indexOnRemoval]
+                              .tabGrid
+                              .removeDragInWidget());
+                    },
                     onClose: () {
                       setState(() => _addWidgetDialogVisible = false);
                     },
@@ -2258,7 +2265,7 @@ class _DashboardPageState extends State<DashboardPage> with WindowListener {
                             bool connected = snapshot.data ?? false;
 
                             String connectedText = (connected)
-                                ? 'Network Tables: Connected (${preferences.getString(PrefKeys.ipAddress)})'
+                                ? 'Network Tables: Connected (${preferences.getString(PrefKeys.ipAddress) ?? Defaults.ipAddress})'
                                 : 'Network Tables: Disconnected';
 
                             return Text(
