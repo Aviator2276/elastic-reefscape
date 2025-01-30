@@ -1,4 +1,3 @@
-import 'package:elastic_dashboard/widgets/nt_widgets/multi-topic/reef_widget.dart';
 import 'package:flutter/material.dart';
 
 import 'package:dot_cast/dot_cast.dart';
@@ -344,13 +343,13 @@ class NTWidgetBuilder {
         defaultWidth: 2,
         defaultHeight: 2);
 
-    register(
-        name: Reef.widgetType,
-        model: ReefModel.new,
-        widget: Reef.new,
-        fromJson: ReefModel.fromJson,
-        minWidth: _normalSize * 2,
-        minHeight: _normalSize * 2);
+    // register(
+    //     name: Reef.widgetType,
+    //     model: ReefModel.new,
+    //     widget: Reef.new,
+    //     fromJson: ReefModel.fromJson,
+    //     minWidth: _normalSize * 2,
+    //     minHeight: _normalSize * 2);
 
     _widgetNameBuildMap.addAll({
       ToggleButton.widgetType: ToggleButton.new,
